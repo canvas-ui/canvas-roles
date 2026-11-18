@@ -1,0 +1,7 @@
+chromium-seccomp.json is derived from the Docker/Moby default seccomp profile:
+https://github.com/moby/profiles/blob/main/seccomp/default.json
+Retrieved 2026-11-18. Upstream license: Apache-2.0 (see LICENSE in this folder).
+
+Canvas modification: allow clone, setns, unshare and chroot so non-root Chromium
+can construct its namespace sandbox while the container drops all capabilities.
+No other upstream syscall rules are changed.

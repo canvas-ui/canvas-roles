@@ -1,0 +1,17 @@
+#!/bin/bash
+set -euo pipefail
+
+# SingleFile supplies --no-sandbox by default. The role always uses Chromium's
+# namespace/seccomp sandbox, including its startup readiness probe.
+args=()
+for arg in "$@"; do
+  case "$arg" in
+    --no-sandbox|--no-sandbox=*) ;;
+    --disable-setuid-sandbox|--disable-namespace-sandbox|--disable-seccomp-filter-sandbox|--single-process)
+      echo 'Disabling the browser sandbox is forbidden' >&2
+      exit 1
+      ;;
+    *) args+=("$arg") ;;
+  esac
+done
+exec /usr/bin/chromium "${args[@]}"

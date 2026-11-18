@@ -10,3 +10,9 @@ Default configuration can be set via `canvas-role.json`
 - npm/yarn
 - git, curl
 
+## Independently deployed roles
+
+- [docker.canvas-captured](docker.canvas-captured/README.md): URL-to-HTML capture
+  service with sandboxed Chromium and a public-only egress proxy. Deploy its
+  Compose stack on a dedicated Docker host; workspace runtimes call its API.
+
