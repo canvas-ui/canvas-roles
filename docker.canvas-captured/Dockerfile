@@ -5,7 +5,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 FROM dependencies AS egress
-COPY src/errors.js src/network-policy.js src/proxy.js ./src/
+COPY src/errors.js src/config.js src/network-policy.js src/proxy.js ./src/
 COPY LICENSE ./LICENSE
 USER node
 CMD ["node", "src/proxy.js"]
@@ -18,5 +18,5 @@ COPY src ./src
 COPY LICENSE ./LICENSE
 COPY --chmod=755 bin/chromium-sandboxed ./bin/chromium-sandboxed
 USER node
-EXPOSE 8080
+EXPOSE 8085
 CMD ["node", "src/server.js"]

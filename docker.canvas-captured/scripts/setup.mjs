@@ -13,5 +13,5 @@ try {
 } catch (error) { if (error.code !== 'EEXIST') throw error; }
 try {
   await copyFile(new URL('../.env.example', import.meta.url), new URL('../.env', import.meta.url), constants.COPYFILE_EXCL);
-  console.log('Created .env; set CAPTURE_BIND_ADDRESS to the VM private IP');
+  console.log('Created .env; set CAPTURE_BIND_ADDRESS to the VM DMZ IP');
 } catch (error) { if (error.code !== 'EEXIST') throw error; }

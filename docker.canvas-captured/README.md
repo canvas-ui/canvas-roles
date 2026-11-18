@@ -11,7 +11,7 @@ workspace capture client are separate integration work.
 
 ## Deploy on the VM
 
-Use a Linux VM with Docker Engine 28+ and Compose v2, unprivileged user namespaces,
+Use a dedicated Linux DMZ VM with Docker Engine and Compose v2, unprivileged user namespaces,
 at least 2 vCPU and 4 GiB RAM. No browser or Node installation is required on
 the host. Start with one concurrent capture; the capture container is limited
 to 2 GiB RAM, 2 CPUs and 256 processes. The initial browser image is substantial;
@@ -29,10 +29,12 @@ docker run --rm --user "$(id -u):$(id -g)" \
 
 Setup creates `.env` and a random token in `secrets/capture-token` without
 overwriting existing files or printing credentials. Edit `.env` and set
-`CAPTURE_BIND_ADDRESS` to the VM's **private LAN IP**. The default is loopback.
+`CAPTURE_BIND_ADDRESS` to the VM's **DMZ IP**. The default is loopback.
 Allow inbound TCP 8085 only from your Canvas server IPs at the Proxmox firewall
-or an equivalent upstream firewall. Docker-published ports require filtering
-in the forwarding path; a host INPUT/UFW rule alone may not restrict them.
+or the VM's host firewall. Both containers use Linux host networking: the API
+binds directly to `CAPTURE_BIND_ADDRESS:CAPTURE_PORT` (default port 8085).
+The proxy binds only to `127.0.0.1:CAPTURE_PROXY_PORT` (default port 3128).
+These ports must be free on the VM; there are no Docker port mappings or bridges.
 
 ```sh
 docker compose up -d --wait
@@ -40,7 +42,7 @@ docker compose ps
 docker compose logs --tail 50 captured
 ```
 
-All three services must be healthy. Preserve `secrets/capture-token` and give its
+Both services must be healthy. Preserve `secrets/capture-token` and give its
 value to authorized Canvas instances through their secret configuration.
 The Compose secret is a read-only file, not a credential baked into the image.
 Keep `secrets/` private to the host owner. Do not mount the Docker socket.
@@ -48,7 +50,7 @@ Keep `secrets/` private to the host owner. Do not mount the Docker socket.
 For a manual request (on the VM, using its configured bind address):
 
 ```sh
-CAPTURE_URL=http://YOUR_VM_PRIVATE_IP:8085
+CAPTURE_URL=http://YOUR_VM_DMZ_IP:8085
 curl --fail-with-body "$CAPTURE_URL/v1/captures" \
   -H "Authorization: Bearer $(cat secrets/capture-token)" \
   -H 'Content-Type: application/json' \
@@ -56,7 +58,7 @@ curl --fail-with-body "$CAPTURE_URL/v1/captures" \
   --dump-header capture.headers --output capture.html
 ```
 
-The API uses HTTP on the private network. Use a trusted isolated LAN/VPN, or
+The API uses HTTP on the DMZ network. Use a trusted isolated LAN/VPN, or
 terminate TLS on an internal reverse proxy when transport encryption is
 required. Bearer authentication alone does not encrypt requests or HTML.
 
@@ -105,7 +107,6 @@ Failures return `{ "error": { "code": "...", "message": "..." } }`:
 - `415`: body is not JSON.
 - `429 busy`: all capture slots occupied; `Retry-After: 5`.
 - `502`: browser, network, DNS, target HTTP response or output validation failed.
-- `503 unavailable`: the ingress relay cannot reach the capture service.
 - `504 capture_timeout`: capture exceeded its deadline.
 
 Clients should use a request deadline slightly longer than `timeoutMs` and
@@ -115,14 +116,9 @@ result cache here; the workspace owns retry scheduling and idempotency.
 
 ## Isolation and networking
 
-- `api` is a small non-root nginx ingress relay. It publishes the API port and
-  forwards only to `captured`; it does not run a browser or hold the token.
-- `captured` belongs only to the dedicated **internal Docker network**. It has
-  no published ports and no direct Internet route. The separate ingress relay
-  makes API publishing independent of Docker's internal-network port behavior.
-  The bridge uses isolated gateway mode, so it has no host gateway address.
-- `egress` joins that network and a separate Internet bridge. It listens only
-  on its internal-network address, publishes no port and has no API secret.
+- `captured` serves the authenticated API directly on the configured host
+  address and port. `egress` serves the public-only HTTP proxy on host loopback.
+  Both use `network_mode: host`. No nginx relay or Docker networks are needed.
 - Chromium routes requests through `egress`, including localhost destinations;
   QUIC and non-proxied WebRTC UDP are disabled. No direct fallback is configured.
 - The proxy validates every HTTP destination and HTTPS CONNECT, denies
@@ -138,11 +134,14 @@ result cache here; the workspace owns retry scheduling and idempotency.
   other Docker default restrictions remain. Neither privileged mode nor
   `SYS_ADMIN` nor an unconfined seccomp profile is needed.
 
-The internal Docker subnet defaults to `172.30.86.0/24`. Change the three-octet
-`CAPTURE_NETWORK_PREFIX` if it overlaps the VM's LAN/VPN. Do not attach captured
-to a normal bridge or the Canvas service network. Do not attach unrelated
-services to its dedicated network. Keep the VM free of sensitive services;
-the VM is an additional boundary for processing untrusted websites.
+The DMZ VM and its firewall are the network boundary. Host networking gives
+container processes access to the VM's network interfaces and loopback services;
+Docker does not enforce proxy-only egress. The proxy and browser flags constrain
+normal capture traffic, but a compromised process could connect directly.
+Keep the VM dedicated to capture and use its DMZ egress policy to limit reachable
+destinations. Chromium's temporary debugging listeners also live on host loopback;
+do not expose them through the firewall. Host networking does not disable the
+browser's process sandbox, read-only filesystem or container resource limits.
 
 ## Validation and updates
 
@@ -156,11 +155,12 @@ docker compose build
 npm run test:docker
 ```
 
-The Docker smoke test uses a temporary Compose project, token, random loopback
-port and `172.30.87.0/24` network. It captures `https://example.com`, verifies
-HTML and checksum, exercises auth/byte/time limits, verifies direct Internet
-egress is blocked, tests private targets through the actual proxy and checks
-temporary-file cleanup. It removes its containers/networks on exit.
+The Docker smoke test uses a temporary Compose project, token and two free host
+ports. It binds the API to `127.0.0.2` to exercise a non-default interface and the
+proxy to `127.0.0.1`. It captures `https://example.com`, verifies HTML and checksum,
+exercises auth/byte/time limits, verifies host network mode and the proxy's
+loopback-only listener, tests private targets through the actual proxy and checks
+temporary-file cleanup. It removes its containers on exit.
 
 SingleFile and npm transitive dependencies are pinned by `package-lock.json`.
 The Node base version is pinned in `Dockerfile`; Chromium and fonts come from

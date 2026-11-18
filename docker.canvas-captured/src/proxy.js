@@ -2,6 +2,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { pathToFileURL } from 'node:url';
 import { parseTarget, resolvePublic } from './network-policy.js';
+import { readProxyConfig } from './config.js';
 
 const MAX_CONNECTION_BYTES = 128 * 1024 ** 2;
 const HOP_HEADERS = ['connection', 'proxy-connection', 'proxy-authorization', 'proxy-authenticate',
@@ -98,10 +99,9 @@ export function createEgressProxy({ resolve = resolvePublic, connect = net.conne
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const host = process.env.PROXY_HOST;
-  if (!host || !net.isIP(host)) throw new Error('PROXY_HOST must be the proxy IP on the isolated capture network');
+  const { host, port } = readProxyConfig();
   const server = createEgressProxy();
-  server.listen(3128, host);
+  server.listen(port, host);
   process.on('SIGTERM', () => server.shutdown());
   process.on('SIGINT', () => server.shutdown());
 }

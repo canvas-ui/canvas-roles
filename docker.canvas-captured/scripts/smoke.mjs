@@ -5,6 +5,16 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import net from 'node:net';
+
+async function reservePort(host) {
+  const server = net.createServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, host, resolve);
+  });
+  return { server, port: server.address().port };
+}
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const scratch = await mkdtemp(path.join(tmpdir(), 'captured-smoke-'));
@@ -12,7 +22,12 @@ const token = randomBytes(32).toString('base64url');
 const override = path.join(scratch, 'compose.json');
 await writeFile(path.join(scratch, 'token'), token + '\n', { mode: 0o644 });
 await writeFile(override, JSON.stringify({ secrets: { capture_token: { file: path.join(scratch, 'token') } } }));
-const env = { ...process.env, CAPTURE_BIND_ADDRESS: '127.0.0.1', CAPTURE_HOST_PORT: '0', CAPTURE_NETWORK_PREFIX: '172.30.87' };
+// A non-default bind address exercises health checks on the configured interface.
+const apiHost = '127.0.0.2';
+const api = await reservePort(apiHost);
+const proxy = await reservePort('0.0.0.0');
+const env = { ...process.env, CAPTURE_BIND_ADDRESS: apiHost,
+  CAPTURE_PORT: String(api.port), CAPTURE_PROXY_PORT: String(proxy.port) };
 const args = ['compose', '-p', `captured-smoke-${process.pid}`, '-f', path.join(root, 'compose.yaml'), '-f', override];
 const sync = (...cmd) => execFileSync('docker', [...args, ...cmd], { cwd: root, env, encoding: 'utf8', maxBuffer: 1024 * 1024 });
 function compose(...cmd) {
@@ -24,15 +39,20 @@ function compose(...cmd) {
 }
 
 try {
+  await Promise.all([api, proxy].map(({ server }) => new Promise(resolve => server.close(resolve))));
   await compose('up', '-d', '--wait', '--wait-timeout', '60');
-  const base = `http://${sync('port', 'api', '8080').trim()}`;
+  for (const service of ['captured', 'egress']) {
+    const id = sync('ps', '-q', service).trim();
+    assert.equal(execFileSync('docker', ['inspect', '--format', '{{.HostConfig.NetworkMode}}', id], { encoding: 'utf8' }).trim(), 'host');
+  }
+  const base = `http://${apiHost}:${api.port}`;
   const post = body => fetch(`${base}/v1/captures`, {
     method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
     body: JSON.stringify(body), signal: AbortSignal.timeout(130000),
   });
   assert.equal((await fetch(`${base}/healthz`)).status, 200);
   assert.equal((await fetch(`${base}/v1/captures`, { method: 'POST' })).status, 401);
-  for (const url of ['http://127.0.0.1:8080/healthz', 'http://169.254.169.254/latest', 'http://[::1]']) {
+  for (const url of [`${base}/healthz`, 'http://169.254.169.254/latest', 'http://[::1]']) {
     assert.equal((await post({ url })).status, 400);
   }
   const response = await post({ url: 'https://example.com/' });
@@ -50,21 +70,21 @@ try {
     import http from 'node:http';
     import assert from 'node:assert/strict';
     import { readdirSync } from 'node:fs';
-    const reachable = await new Promise(resolve => {
-      const s = net.connect(443, '1.1.1.1');
+    const nonLoopbackProxyListener = await new Promise(resolve => {
+      const s = net.connect(${proxy.port}, '${apiHost}');
       s.on('connect', () => { s.destroy(); resolve(true); });
       s.on('error', () => resolve(false));
       s.setTimeout(2000, () => { s.destroy(); resolve(false); });
     });
-    assert.equal(reachable, false, 'Direct browser egress must be blocked');
-    for (const target of ['http://169.254.169.254/', 'http://172.30.87.1/', 'http://127.0.0.1/']) {
+    assert.equal(nonLoopbackProxyListener, false, 'Proxy must bind only to 127.0.0.1');
+    for (const target of ['http://169.254.169.254/', 'http://10.0.0.1/', 'http://127.0.0.1/']) {
       const status = await new Promise((resolve, reject) => {
-        http.get({hostname:'172.30.87.2',port:3128,path:target}, r => {r.resume();resolve(r.statusCode)}).on('error',reject);
+        http.get({hostname:'127.0.0.1',port:${proxy.port},path:target}, r => {r.resume();resolve(r.statusCode)}).on('error',reject);
       });
       assert.equal(status,403);
     }
     assert.equal(readdirSync('/tmp').some(n => n.startsWith('canvas-capture-')), false);
-    console.log('Direct egress blocked; proxy denies private targets; temporary captures cleaned');
+    console.log('Host networking verified; proxy binds only loopback and denies private targets; temporary captures cleaned');
   `);
   console.log(checks.trim());
   console.log('Docker smoke passed');
