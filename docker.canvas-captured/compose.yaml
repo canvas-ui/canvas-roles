@@ -1,6 +1,25 @@
 name: canvas-captured
 
 services:
+  token-init:
+    build:
+      context: .
+      target: egress
+    image: canvas-captured-egress:0.1.0
+    command: [node, src/init-token.js]
+    network_mode: none
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 32
+    mem_limit: 64m
+    environment:
+      CAPTURE_TOKEN_FILE: /run/secrets/capture-token
+    volumes:
+      - ${CAPTURE_SECRETS_DIR:-./secrets}:/run/secrets
+
   captured:
     build:
       context: .
@@ -24,13 +43,16 @@ services:
     environment:
       CAPTURE_HOST: ${CAPTURE_BIND_ADDRESS:-127.0.0.1}
       CAPTURE_PORT: ${CAPTURE_PORT:-8085}
-      CAPTURE_TOKEN_FILE: /run/secrets/capture_token
+      CAPTURE_TOKEN_FILE: /run/secrets/capture-token
       CAPTURE_PROXY_URL: http://127.0.0.1:${CAPTURE_PROXY_PORT:-3128}
       CAPTURE_CONCURRENCY: ${CAPTURE_CONCURRENCY:-1}
       CAPTURE_TIMEOUT_MS: ${CAPTURE_TIMEOUT_MS:-120000}
       CAPTURE_MAX_BYTES: ${CAPTURE_MAX_BYTES:-33554432}
-    secrets: [capture_token]
+    volumes:
+      - ${CAPTURE_SECRETS_DIR:-./secrets}:/run/secrets:ro
     depends_on:
+      token-init:
+        condition: service_completed_successfully
       egress:
         condition: service_healthy
     healthcheck:
@@ -68,7 +90,3 @@ services:
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
-
-secrets:
-  capture_token:
-    file: ./secrets/capture-token

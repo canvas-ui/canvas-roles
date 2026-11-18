@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { randomBytes, createHash } from 'node:crypto';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,17 +18,14 @@ async function reservePort(host) {
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const scratch = await mkdtemp(path.join(tmpdir(), 'captured-smoke-'));
-const token = randomBytes(32).toString('base64url');
-const override = path.join(scratch, 'compose.json');
-await writeFile(path.join(scratch, 'token'), token + '\n', { mode: 0o644 });
-await writeFile(override, JSON.stringify({ secrets: { capture_token: { file: path.join(scratch, 'token') } } }));
 // A non-default bind address exercises health checks on the configured interface.
 const apiHost = '127.0.0.2';
 const api = await reservePort(apiHost);
 const proxy = await reservePort('0.0.0.0');
 const env = { ...process.env, CAPTURE_BIND_ADDRESS: apiHost,
-  CAPTURE_PORT: String(api.port), CAPTURE_PROXY_PORT: String(proxy.port) };
-const args = ['compose', '-p', `captured-smoke-${process.pid}`, '-f', path.join(root, 'compose.yaml'), '-f', override];
+  CAPTURE_PORT: String(api.port), CAPTURE_PROXY_PORT: String(proxy.port),
+  CAPTURE_SECRETS_DIR: path.join(scratch, 'secrets') };
+const args = ['compose', '-p', `captured-smoke-${process.pid}`, '-f', path.join(root, 'compose.yaml')];
 const sync = (...cmd) => execFileSync('docker', [...args, ...cmd], { cwd: root, env, encoding: 'utf8', maxBuffer: 1024 * 1024 });
 function compose(...cmd) {
   return new Promise((resolve, reject) => {
@@ -41,6 +38,11 @@ function compose(...cmd) {
 try {
   await Promise.all([api, proxy].map(({ server }) => new Promise(resolve => server.close(resolve))));
   await compose('up', '-d', '--wait', '--wait-timeout', '60');
+  const readToken = () => sync('exec', '-T', 'captured', 'node', '-e',
+    "process.stdout.write(require('fs').readFileSync(process.env.CAPTURE_TOKEN_FILE,'utf8'))").trim();
+  const token = readToken();
+  assert.ok(/^[A-Za-z0-9_-]{43}$/.test(token), 'First startup must generate a 256-bit token');
+  assert.ok(!sync('logs', '--no-color', 'token-init').includes(token), 'Token must not appear in logs');
   for (const service of ['captured', 'egress']) {
     const id = sync('ps', '-q', service).trim();
     assert.equal(execFileSync('docker', ['inspect', '--format', '{{.HostConfig.NetworkMode}}', id], { encoding: 'utf8' }).trim(), 'host');
@@ -87,6 +89,15 @@ try {
     console.log('Host networking verified; proxy binds only loopback and denies private targets; temporary captures cleaned');
   `);
   console.log(checks.trim());
+  sync('exec', '-T', 'captured', 'node', '--input-type=module', '-e', `
+    import { writeFileSync } from 'node:fs';
+    import assert from 'node:assert/strict';
+    assert.throws(() => writeFileSync('/run/secrets/write-probe', 'test'), { code: 'EROFS' });
+  `);
+  await compose('up', '-d', '--force-recreate', '--wait', '--wait-timeout', '60');
+  assert.ok(readToken() === token, 'Generated token must survive container recreation');
+  assert.equal((await post({ url: 'http://127.0.0.1/' })).status, 400);
+  console.log('Missing token generated, never logged, mounted read-only and preserved across recreation');
   console.log('Docker smoke passed');
 } catch (error) {
   console.error(sync('logs', '--no-color', '--tail', '50'));

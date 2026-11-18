@@ -21,15 +21,15 @@ Copy/clone `canvas-roles` onto the VM, then:
 
 ```sh
 cd canvas-roles/docker.canvas-captured
-docker compose build --pull
-docker run --rm --user "$(id -u):$(id -g)" \
-  --mount "type=bind,src=$PWD,dst=/role" --workdir /role \
-  --entrypoint node canvas-captured:0.1.0 scripts/setup.mjs
+CAPTURE_BIND_ADDRESS=YOUR_VM_DMZ_IP docker compose up -d --build --wait
 ```
 
-Setup creates `.env` and a random token in `secrets/capture-token` without
-overwriting existing files or printing credentials. Edit `.env` and set
-`CAPTURE_BIND_ADDRESS` to the VM's **DMZ IP**. The default is loopback.
+Startup automatically creates `secrets/capture-token` if it is missing. The
+256-bit random token is persisted, never printed and never overwritten.
+For persistent configuration, copy `.env.example` to `.env` and set
+`CAPTURE_BIND_ADDRESS` to the VM's **DMZ IP**. Without configuration the API
+binds to loopback. `CAPTURE_SECRETS_DIR` selects a dedicated host directory
+(default `./secrets`); do not point it at a directory shared with another service.
 Allow inbound TCP 8085 only from your Canvas server IPs at the Proxmox firewall
 or the VM's host firewall. Both containers use Linux host networking: the API
 binds directly to `CAPTURE_BIND_ADDRESS:CAPTURE_PORT` (default port 8085).
@@ -37,15 +37,32 @@ The proxy binds only to `127.0.0.1:CAPTURE_PROXY_PORT` (default port 3128).
 These ports must be free on the VM; there are no Docker port mappings or bridges.
 
 ```sh
-docker compose up -d --wait
 docker compose ps
 docker compose logs --tail 50 captured
 ```
 
-Both services must be healthy. Preserve `secrets/capture-token` and give its
+The `token-init` container must exit successfully; `captured` and `egress` must
+be healthy. Preserve `secrets/capture-token` and give its
 value to authorized Canvas instances through their secret configuration.
-The Compose secret is a read-only file, not a credential baked into the image.
-Keep `secrets/` private to the host owner. Do not mount the Docker socket.
+The initializer has no network and exits before capture starts. It owns the
+dedicated secrets directory as uid/gid 1000 with mode 0700 and the token as
+0400. The capture container mounts the directory read-only. Neither the token
+nor its value is baked into the image or stored in Compose environment variables.
+Use `sudo cat secrets/capture-token` if your host user cannot read it.
+Do not mount the Docker socket.
+
+An existing empty, malformed or non-regular token file causes startup to fail;
+it is never silently replaced. To replace a known invalid file while retaining
+it for inspection, move it aside and restart:
+
+```sh
+mv secrets/capture-token "secrets/capture-token.invalid.$(date +%s)"
+CAPTURE_BIND_ADDRESS=YOUR_VM_DMZ_IP docker compose up -d --build --wait
+```
+
+Rebuilding or recreating containers preserves a valid token. Deleting the token
+file deliberately rotates it on the next startup, so callers must receive the
+new value.
 
 For a manual request (on the VM, using its configured bind address):
 
@@ -119,6 +136,10 @@ result cache here; the workspace owns retry scheduling and idempotency.
 - `captured` serves the authenticated API directly on the configured host
   address and port. `egress` serves the public-only HTTP proxy on host loopback.
   Both use `network_mode: host`. No nginx relay or Docker networks are needed.
+- `token-init` has no network and only a writable secrets-directory mount. It
+  runs as root with CHOWN, DAC_OVERRIDE and FOWNER solely to initialize that
+  directory and its file, then exits. The browser and proxy run as uid 1000
+  with all container capabilities dropped.
 - Chromium routes requests through `egress`, including localhost destinations;
   QUIC and non-proxied WebRTC UDP are disabled. No direct fallback is configured.
 - The proxy validates every HTTP destination and HTTPS CONNECT, denies
@@ -127,7 +148,7 @@ result cache here; the workspace owns retry scheduling and idempotency.
   Redirects, frames and subresources must pass the same proxy policy. It never
   resolves the hostname a second time when opening the socket.
 - Each capture has a fresh browser process/profile and a private temporary
-  directory. All container capabilities are dropped. Root filesystems are
+  directory. Root filesystems are
   read-only; temporary storage, RAM, CPU, PIDs and connections are bounded.
 - `bin/chromium-sandboxed` removes SingleFile's default `--no-sandbox` argument.
   The seccomp policy allows Chromium's unprivileged namespace/chroot operations;
@@ -155,12 +176,14 @@ docker compose build
 npm run test:docker
 ```
 
-The Docker smoke test uses a temporary Compose project, token and two free host
+The Docker smoke test uses a temporary Compose project, empty secrets directory and two free host
 ports. It binds the API to `127.0.0.2` to exercise a non-default interface and the
 proxy to `127.0.0.1`. It captures `https://example.com`, verifies HTML and checksum,
 exercises auth/byte/time limits, verifies host network mode and the proxy's
 loopback-only listener, tests private targets through the actual proxy and checks
-temporary-file cleanup. It removes its containers on exit.
+temporary-file cleanup. It verifies automatic token creation, absence from logs,
+the read-only secrets mount and token preservation after container recreation.
+It removes its containers on exit.
 
 SingleFile and npm transitive dependencies are pinned by `package-lock.json`.
 The Node base version is pinned in `Dockerfile`; Chromium and fonts come from

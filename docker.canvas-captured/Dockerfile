@@ -5,7 +5,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 FROM dependencies AS egress
-COPY src/errors.js src/config.js src/network-policy.js src/proxy.js ./src/
+COPY src/errors.js src/config.js src/token.js src/init-token.js src/network-policy.js src/proxy.js ./src/
 COPY LICENSE ./LICENSE
 USER node
 CMD ["node", "src/proxy.js"]

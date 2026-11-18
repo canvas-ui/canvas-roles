@@ -1,4 +1,4 @@
 {
-  "entry": ["scripts/*.mjs", "tests/*.test.js"],
+  "entry": ["src/init-token.js", "scripts/*.mjs", "tests/*.test.js"],
   "project": ["src/**/*.js", "scripts/*.mjs", "tests/**/*.js"]
 }

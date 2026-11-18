@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readToken } from './token.js';
 
 function integer(env, name, fallback, min, max) {
   const value = Number(env[name] ?? fallback);
@@ -10,10 +10,7 @@ function integer(env, name, fallback, min, max) {
 
 export function readConfig(env = process.env) {
   if (!env.CAPTURE_TOKEN_FILE) throw new Error('CAPTURE_TOKEN_FILE is required');
-  const token = readFileSync(env.CAPTURE_TOKEN_FILE, 'utf8').trim();
-  if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) {
-    throw new Error('CAPTURE_TOKEN_FILE must contain a 32–256 character base64url service token');
-  }
+  const token = readToken(env.CAPTURE_TOKEN_FILE);
   const proxy = new URL(env.CAPTURE_PROXY_URL || 'http://127.0.0.1:3128');
   if (proxy.protocol !== 'http:' || proxy.username || proxy.password
     || proxy.pathname !== '/' || proxy.search || proxy.hash) {
